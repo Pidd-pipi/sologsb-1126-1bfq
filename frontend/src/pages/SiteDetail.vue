@@ -9,6 +9,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import MapPanel from '@/components/common/MapPanel.vue'
 import FactorScoreBar from '@/components/common/FactorScoreBar.vue'
 import GradeBadge from '@/components/common/GradeBadge.vue'
+import VetoResolveDialog from '@/components/common/VetoResolveDialog.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { useSiteStore } from '@/stores/siteStore'
 import { useProfileStore } from '@/stores/profileStore'
@@ -20,9 +21,9 @@ import type { AspectType, AccessMode, SurfaceType } from '@/types/campsite'
 import type { Grade } from '@/utils/score'
 import type { RockfallRisk, WindDir, WindForce } from '@/types/factor'
 import { ROCKFALL_RISKS, WIND_DIRS, WIND_FORCES } from '@/types/factor'
-import { VETO_TYPES, VETO_HINTS } from '@/types/veto'
-import type { VetoType } from '@/types/veto'
-import { formatDate, formatDateTime, todayIso } from '@/utils/format'
+import { VETO_TYPES, VETO_HINTS, VETO_STATUS_LABEL, vetoStatus } from '@/types/veto'
+import type { RiskVeto, VetoType } from '@/types/veto'
+import { addDaysIso, formatDate, formatDateTime, todayIso } from '@/utils/format'
 import { formatLat, formatLng } from '@/utils/geo'
 
 const route = useRoute()
@@ -30,6 +31,8 @@ const router = useRouter()
 const siteStore = useSiteStore()
 const profileStore = useProfileStore()
 const uiStore = useUiStore()
+
+const today = todayIso()
 
 const siteId = computed(() => Number(route.params.id))
 const site = computed(() => siteStore.byId(siteId.value))
@@ -40,7 +43,8 @@ const { scoreOf } = useRanking({
   weights: () => profileStore.activeWeights,
   normalize: () => profileStore.activeProfile?.normalize ?? 'minmax',
   thresholds: () => profileStore.activeProfile?.thresholds ?? { gradeA: 78, gradeB: 58 },
-  vetoedIds: () => uiStore.vetoedSiteIds
+  vetoedIds: () => uiStore.vetoedSiteIds,
+  pendingReviewIds: () => uiStore.pendingReviewSiteIds
 })
 
 const scoreRow = computed(() => scoreOf(siteId.value))
@@ -55,7 +59,11 @@ function openSite(id: number): void {
 }
 const grade = computed(() => scoreRow.value?.grade ?? 'C')
 const factorHistory = computed(() => siteStore.factorsOf(siteId.value))
+/** 全部否决记录（含已解除留档） */
 const vetoList = computed(() => uiStore.vetosOf(siteId.value))
+/** 仍在生效（未解除）的否决记录，决定等级压制与否 */
+const activeVetoList = computed(() => uiStore.activeVetosOf(siteId.value))
+const pendingReview = computed(() => uiStore.isPendingReview(siteId.value))
 
 /* --------------------------- 多轮因子复核录入 --------------------------- */
 const showFactorForm = ref(false)
@@ -134,13 +142,33 @@ const vetoForm = reactive({
   type: '山洪沟' as VetoType,
   description: '',
   judge: '',
-  judgedAt: todayIso()
+  judgedAt: todayIso(),
+  nextReviewAt: addDaysIso(todayIso(), 30)
 })
+
+const resolvingVeto = ref<RiskVeto | null>(null)
+
+function openResolve(v: RiskVeto): void {
+  resolvingVeto.value = v
+}
+
+/** 已解除记录在台账行中弱化 */
+function vetoRowClass({ row }: { row: RiskVeto }): string {
+  return vetoStatus(row, today) === 'resolved' ? 'resolved-row' : ''
+}
 
 async function addVetoHere(): Promise<void> {
   if (!site.value) return
   if (!vetoForm.description.trim()) {
     ElMessage.warning('请填写否决说明')
+    return
+  }
+  if (!vetoForm.nextReviewAt) {
+    ElMessage.warning('请选择下次复查日期')
+    return
+  }
+  if (vetoForm.nextReviewAt < vetoForm.judgedAt) {
+    ElMessage.warning('下次复查日期不能早于判定日期')
     return
   }
   await uiStore.addVeto({
@@ -149,17 +177,12 @@ async function addVetoHere(): Promise<void> {
     description: vetoForm.description.trim(),
     judge: vetoForm.judge.trim() || '未署名',
     judgedAt: vetoForm.judgedAt || todayIso(),
+    nextReviewAt: vetoForm.nextReviewAt,
     createdAt: '',
     updatedAt: ''
   })
   vetoForm.description = ''
-  ElMessage.success('已登记否决项，该营位在名次表与地图上标红且禁止评 A')
-}
-
-async function removeVeto(id: number | undefined): Promise<void> {
-  if (typeof id !== 'number') return
-  await uiStore.removeVeto(id)
-  ElMessage.success('已解除该否决项')
+  ElMessage.success('已登记否决项，等级压到 C；复查日到期未解除将标为待复查')
 }
 
 /* ------------------------------ 基本信息编辑 ------------------------------ */
@@ -251,12 +274,16 @@ watch(
     </div>
 
     <el-alert
-      v-if="vetoList.length"
-      type="error"
+      v-if="activeVetoList.length"
+      :type="pendingReview ? 'warning' : 'error'"
       show-icon
       :closable="false"
-      title="该营位命中风险否决项，综合等级已被压到 C 级（禁止评 A）"
-      :description="vetoList.map((v) => `${v.type}：${v.description}`).join(' ｜ ')"
+      :title="
+        pendingReview
+          ? '该营位有复查到期仍未解除的否决项：保持 C 级并标记为「待复查」，请现场确认后复核解除'
+          : '该营位命中风险否决项，综合等级被压到 C 级，复查日到期后需现场复核'
+      "
+      :description="activeVetoList.map((v) => `${v.type}（复查 ${formatDate(v.nextReviewAt)}）：${v.description}`).join(' ｜ ')"
     />
 
     <MapPanel
@@ -277,7 +304,12 @@ watch(
       <div class="stat-card">
         <div class="stat-card__label">推荐等级</div>
         <div class="stat-card__value">
-          <GradeBadge :grade="grade" size="large" :vetoed="vetoList.length > 0" />
+          <GradeBadge
+            :grade="grade"
+            size="large"
+            :vetoed="activeVetoList.length > 0"
+            :pending-review="pendingReview"
+          />
         </div>
         <div class="stat-card__extra">名次第 {{ scoreRow?.rank ?? '—' }} 位</div>
       </div>
@@ -289,7 +321,9 @@ watch(
       <div class="stat-card">
         <div class="stat-card__label">评估轮次</div>
         <div class="stat-card__value">{{ factorHistory.length }}</div>
-        <div class="stat-card__extra">否决项 {{ vetoList.length }} 条</div>
+        <div class="stat-card__extra">
+          生效否决 {{ activeVetoList.length }} 条 · 台账 {{ vetoList.length }} 条
+        </div>
       </div>
     </div>
 
@@ -559,30 +593,90 @@ watch(
     <section class="panel">
       <div class="panel__head">
         <h2>风险否决记录</h2>
-        <span class="weight-note">命中任一条即整行标红并禁止评 A</span>
+        <span class="weight-note">
+          生效 {{ activeVetoList.length }} 条 · 到复查日未解除则标「待复查」；解除后记录留台账
+        </span>
       </div>
 
-      <el-table v-if="vetoList.length" :data="vetoList" size="small" border>
-        <el-table-column prop="type" label="否决类型" width="130">
+      <el-table
+        v-if="vetoList.length"
+        :data="vetoList"
+        size="small"
+        border
+        :row-class-name="vetoRowClass"
+      >
+        <el-table-column label="否决类型" width="120">
           <template #default="{ row }">
-            <el-tag type="danger" size="small">{{ row.type }}</el-tag>
+            <el-tag
+              :type="vetoStatus(row, today) === 'resolved' ? 'info' : 'danger'"
+              size="small"
+            >
+              {{ row.type }}
+            </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="description" label="说明" min-width="260" />
-        <el-table-column prop="judge" label="判定人" width="110" />
-        <el-table-column label="判定日期" width="120">
+        <el-table-column label="说明 / 复核结论" min-width="280">
+          <template #default="{ row }">
+            <span>{{ row.description }}</span>
+            <div v-if="row.resolution" class="resolution-text">
+              <el-tag type="success" size="small" effect="plain">复核结论</el-tag>
+              {{ row.resolution }}
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="判定人 / 复核人" width="120">
+          <template #default="{ row }">
+            <div>{{ row.judge }}</div>
+            <div v-if="row.reviewer" class="cell-sub">复核 {{ row.reviewer }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="判定日期" width="104">
           <template #default="{ row }">{{ formatDate(row.judgedAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
+        <el-table-column label="下次复查" width="110">
           <template #default="{ row }">
-            <el-button size="small" text type="danger" @click="removeVeto(row.id)">解除</el-button>
+            <span :class="{ 'review-due': vetoStatus(row, today) === 'pending-review' }">
+              {{ formatDate(row.nextReviewAt) || '—' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag
+              :type="
+                vetoStatus(row, today) === 'pending-review'
+                  ? 'warning'
+                  : vetoStatus(row, today) === 'resolved'
+                    ? 'success'
+                    : 'danger'
+              "
+              size="small"
+              effect="plain"
+            >
+              {{ VETO_STATUS_LABEL[vetoStatus(row, today)] }}
+            </el-tag>
+            <div v-if="row.resolvedAt" class="cell-sub">{{ formatDate(row.resolvedAt) }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="vetoStatus(row, today) !== 'resolved'"
+              size="small"
+              text
+              type="warning"
+              @click="openResolve(row)"
+            >
+              复核解除
+            </el-button>
+            <span v-else class="cell-sub">已留档</span>
           </template>
         </el-table-column>
       </el-table>
       <p v-else class="panel__hint">该营位暂无否决记录，可在下方直接登记。</p>
 
       <el-divider content-position="left">登记新的否决项</el-divider>
-      <el-form label-width="100px" @submit.prevent>
+      <el-form label-width="110px" @submit.prevent>
         <div class="form-grid">
           <el-form-item label="否决类型">
             <el-select id="veto-type" v-model="vetoForm.type" style="width: 100%">
@@ -601,6 +695,16 @@ watch(
               style="width: 100%"
             />
           </el-form-item>
+          <el-form-item label="下次复查日期" required>
+            <el-date-picker
+              id="veto-review-date"
+              v-model="vetoForm.nextReviewAt"
+              type="date"
+              value-format="YYYY-MM-DD"
+              :disabled-date="(d: Date) => vetoForm.judgedAt ? d < new Date(`${vetoForm.judgedAt}T00:00:00`) : false"
+              style="width: 100%"
+            />
+          </el-form-item>
         </div>
         <el-form-item label="说明">
           <el-input
@@ -616,6 +720,8 @@ watch(
         </el-form-item>
       </el-form>
     </section>
+
+    <VetoResolveDialog :veto="resolvingVeto" @close="resolvingVeto = null" />
   </div>
 
   <div v-else class="page">
@@ -644,7 +750,28 @@ watch(
 .coord {
   font-size: 15px;
 }
+.cell-sub {
+  font-size: 11px;
+  color: var(--gb-muted);
+}
+.review-due {
+  color: #b45309;
+  font-weight: 600;
+}
+.resolution-text {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--gb-muted);
+  line-height: 1.5;
+}
 .review-form {
   margin-bottom: 12px;
+}
+</style>
+
+<style>
+/* 已解除留档行弱化；el-table 行类不受 scoped 约束，写全局 */
+.el-table .resolved-row {
+  opacity: 0.62;
 }
 </style>

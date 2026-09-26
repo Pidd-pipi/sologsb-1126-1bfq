@@ -57,7 +57,8 @@ const { ranked, best } = useRanking({
   weights: () => uiStore.workingWeights,
   normalize: () => uiStore.workingNormalize,
   thresholds: () => uiStore.workingThresholds,
-  vetoedIds: () => uiStore.vetoedSiteIds
+  vetoedIds: () => uiStore.vetoedSiteIds,
+  pendingReviewIds: () => uiStore.pendingReviewSiteIds
 })
 
 const totalWeight = computed(() => weightSum(uiStore.workingWeights))
@@ -349,14 +350,21 @@ async function removeProfileRow(id: number | undefined): Promise<void> {
             <strong class="total">{{ formatScore(row.total) }}</strong>
           </template>
         </el-table-column>
-        <el-table-column label="等级" width="190">
+        <el-table-column label="等级" width="200">
           <template #default="{ row }">
-            <GradeBadge :grade="row.grade" :score="row.total" :vetoed="row.vetoed" size="small" />
+            <GradeBadge
+              :grade="row.grade"
+              :score="row.total"
+              :vetoed="row.vetoed"
+              :pending-review="row.pendingReview"
+              size="small"
+            />
           </template>
         </el-table-column>
-        <el-table-column label="否决" width="120">
+        <el-table-column label="否决" width="130">
           <template #default="{ row }">
-            <el-tag v-if="row.vetoed" type="danger" size="small">命中否决</el-tag>
+            <el-tag v-if="row.pendingReview" type="warning" size="small">待复查</el-tag>
+            <el-tag v-else-if="row.vetoed" type="danger" size="small">命中否决</el-tag>
             <span v-else class="muted">无</span>
           </template>
         </el-table-column>

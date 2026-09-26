@@ -62,9 +62,18 @@ export function nowIso(): string {
   return new Date().toISOString()
 }
 
-/** 当前日期 YYYY-MM-DD。 */
+/** 当前日期 YYYY-MM-DD（UTC，与现有日期字段口径一致）。 */
 export function todayIso(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+/** 在 YYYY-MM-DD 上加减自然日，返回 YYYY-MM-DD；非法输入返回空串。 */
+export function addDaysIso(iso: string, days: number): string {
+  if (!iso) return ''
+  const base = new Date(`${iso}T00:00:00.000Z`)
+  if (Number.isNaN(base.getTime())) return ''
+  base.setUTCDate(base.getUTCDate() + days)
+  return base.toISOString().slice(0, 10)
 }
 
 /** ISO / 日期文本转本地展示。 */

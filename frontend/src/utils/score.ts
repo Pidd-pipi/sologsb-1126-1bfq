@@ -50,7 +50,10 @@ export interface SiteScore {
   total: number
   grade: Grade
   rows: FactorScoreRow[]
+  /** 命中未解除的否决项（等级被压到 C） */
   vetoed: boolean
+  /** 到了下次复查日期仍未解除：等级继续为 C，名次表额外标成待复查 */
+  pendingReview: boolean
   vetoTypes: string[]
 }
 
@@ -157,7 +160,7 @@ export function weightedTotal(normalized: Record<FactorKey, number>, weights: Fa
   return round1(sum / weightSum)
 }
 
-/** 等级阈值判定；命中否决项时最高只能评 B，短路为 C。 */
+/** 等级阈值判定；命中未解除的否决项时短路为 C（待复查记录同样保持 C）。 */
 export function gradeOf(total: number, thresholds: GradeThresholds, vetoed: boolean): Grade {
   const a = Number(thresholds.gradeA) || 80
   const b = Number(thresholds.gradeB) || 60

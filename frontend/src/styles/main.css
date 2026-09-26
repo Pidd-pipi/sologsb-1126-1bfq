@@ -156,6 +156,15 @@ h4 {
   background: #ffeceb !important;
 }
 
+/* 待复查：否决仍在生效（保持 C），但复查日已到，用橙色提醒现场确认 */
+.pending-row {
+  background: #fff8ec !important;
+}
+
+.el-table .pending-row:hover > td {
+  background: #fdf1dc !important;
+}
+
 .weight-note {
   font-size: 12px;
   color: var(--gb-muted);

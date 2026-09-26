@@ -28,8 +28,10 @@ export interface RankingInput {
   weights: () => FactorWeights
   normalize: () => NormalizeMethod
   thresholds: () => GradeThresholds
-  /** 命中否决项的营位 id 集合 */
+  /** 命中未解除否决项的营位 id 集合 */
   vetoedIds: () => number[]
+  /** 到了复查日期仍未解除的营位 id 集合（待复查，是 vetoedIds 的子集） */
+  pendingReviewIds?: () => number[]
 }
 
 export interface RankingRow extends SiteScore {
@@ -57,6 +59,7 @@ export function useRanking(input: RankingInput): RankingState {
       const weights = input.weights()
       const thresholds = input.thresholds()
       const vetoSet = new Set(input.vetoedIds() ?? [])
+      const pendingSet = new Set(input.pendingReviewIds?.() ?? [])
 
       const list = sites.filter((s): s is Campsite & { id: number } => typeof s.id === 'number')
 
@@ -73,6 +76,7 @@ export function useRanking(input: RankingInput): RankingState {
         const raw = entries[idx].values
         const normalized = matrix.get(siteId) ?? ({} as Record<FactorKey, number>)
         const vetoed = vetoSet.has(siteId)
+        const pendingReview = pendingSet.has(siteId)
         const total = weightedTotal(normalized, weights)
         return {
           site,
@@ -80,6 +84,7 @@ export function useRanking(input: RankingInput): RankingState {
           total,
           grade: gradeOf(total, thresholds, vetoed),
           vetoed,
+          pendingReview,
           vetoTypes: [],
           rows: buildFactorRows(normalized, weights).map((row) => ({ ...row, raw: raw[row.key] })),
           raw,

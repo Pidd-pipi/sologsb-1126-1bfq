@@ -16,8 +16,9 @@ import { useRanking } from '@/hooks/useRanking'
 import type { Grade } from '@/utils/score'
 import { useAmapLoader } from '@/hooks/useAmapLoader'
 import { SURFACE_TYPES } from '@/types/campsite'
+import { isVetoDue } from '@/types/veto'
 import { formatLat, formatLng, distanceMeters, formatDistance } from '@/utils/geo'
-import { formatDate } from '@/utils/format'
+import { formatDate, todayIso } from '@/utils/format'
 
 const router = useRouter()
 const siteStore = useSiteStore()
@@ -46,7 +47,8 @@ const { ranked, scoreOf } = useRanking({
   weights: () => profileStore.activeWeights,
   normalize: () => profileStore.activeProfile?.normalize ?? 'minmax',
   thresholds: () => profileStore.activeProfile?.thresholds ?? { gradeA: 78, gradeB: 58 },
-  vetoedIds: () => uiStore.vetoedSiteIds
+  vetoedIds: () => uiStore.vetoedSiteIds,
+  pendingReviewIds: () => uiStore.pendingReviewSiteIds
 })
 
 const panelSites = computed(() =>
@@ -65,7 +67,7 @@ const selectedRow = computed(() =>
   selectedId.value == null ? null : scoreOf(selectedId.value)
 )
 
-const selectedVetos = computed(() => uiStore.vetosOf(selectedId.value))
+const selectedVetos = computed(() => uiStore.activeVetosOf(selectedId.value))
 
 /** 选中营位到最近营位的距离，作为现场通行参考 */
 const nearest = computed(() => {
@@ -145,11 +147,13 @@ const gradeStats = computed(() => {
         <div class="stat-card__extra">共 {{ ranked.length }} 个候选营位</div>
       </div>
       <div class="stat-card">
-        <div class="stat-card__label">否决标记</div>
-        <div class="stat-card__value" :style="{ color: uiStore.vetoTotal ? '#b91c1c' : undefined }">
+        <div class="stat-card__label">否决压制</div>
+        <div class="stat-card__value" :style="{ color: uiStore.activeVetoTotal ? '#b91c1c' : undefined }">
           {{ uiStore.vetoedSiteIds.length }}
         </div>
-        <div class="stat-card__extra">共 {{ uiStore.vetoTotal }} 条否决记录</div>
+        <div class="stat-card__extra">
+          台账 {{ uiStore.vetoTotal }} 条（含已解除） · 待复查 {{ uiStore.pendingReviewTotal }}
+        </div>
       </div>
     </div>
 
@@ -213,6 +217,7 @@ const gradeStats = computed(() => {
           :grade="selectedRow?.grade ?? 'C'"
           :score="selectedRow?.total"
           :vetoed="selectedVetos.length > 0"
+          :pending-review="selectedRow?.pendingReview ?? false"
         />
       </div>
       <div class="detail-grid">
@@ -257,8 +262,14 @@ const gradeStats = computed(() => {
       </div>
       <p v-if="selectedSite.note" class="panel__hint">现场备注：{{ selectedSite.note }}</p>
       <div v-if="selectedVetos.length" class="veto-block">
-        <el-tag v-for="v in selectedVetos" :key="v.id" type="danger" size="small" class="mr6">
-          {{ v.type }}
+        <el-tag
+          v-for="v in selectedVetos"
+          :key="v.id"
+          :type="isVetoDue(v, todayIso()) ? 'warning' : 'danger'"
+          size="small"
+          class="mr6"
+        >
+          {{ v.type }}{{ isVetoDue(v, todayIso()) ? ' · 待复查' : '' }}
         </el-tag>
         <span class="weight-note">{{ selectedVetos.map((v) => v.description).join(' ｜ ') }}</span>
       </div>

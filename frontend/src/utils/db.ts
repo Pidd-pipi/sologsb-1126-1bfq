@@ -5,6 +5,7 @@
  *   v1 建 sites / factors 两张表
  *   v2 新增 profiles 表，并为 factors 补 siteId 索引
  *   v3 新增 vetos 表，并为存量营位回填默认权重方案
+ *   v4 否决记录增加下次复查日期与复核解除字段（解除后记录保留在台账）
  */
 import Dexie, { type Table } from 'dexie'
 import type { Campsite } from '@/types/campsite'
@@ -12,10 +13,12 @@ import type { FactorAssessment } from '@/types/factor'
 import type { ScoreProfile } from '@/types/score'
 import { DEFAULT_WEIGHTS } from '@/types/score'
 import type { RiskVeto } from '@/types/veto'
+import { DEFAULT_REVIEW_DAYS } from '@/types/veto'
+import { addDaysIso } from '@/utils/format'
 
 export const DB_NAME = 'gbcampsite-db'
 /** 当前数据结构版本号 */
-export const DB_VERSION = 3
+export const DB_VERSION = 4
 
 export class GbCampsiteDatabase extends Dexie {
   sites!: Table<Campsite, number>
@@ -72,6 +75,29 @@ export class GbCampsiteDatabase extends Dexie {
             if (typeof s.note !== 'string') s.note = ''
             if (typeof s.flatness !== 'number') s.flatness = 70
             if (typeof s.tentCapacity !== 'number') s.tentCapacity = 1
+          })
+      })
+
+    // v4：否决记录增加下次复查日期与复核解除字段（解除不再删记录，留台账回看）
+    this.version(DB_VERSION)
+      .stores({
+        sites: '++id, code, name, campName, surface, access, defaultProfileId, updatedAt',
+        factors: '++id, siteId, assessedAt, assessor',
+        profiles: '++id, name, season, active, updatedAt',
+        vetos: '++id, siteId, type, judgedAt, nextReviewAt'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('vetos')
+          .toCollection()
+          .modify((v: Partial<RiskVeto>) => {
+            // 存量记录默认「判定日 + 30 天」为复查日；缺判定日期时留空（继续压 C，不自动转待复查）
+            if (typeof v.nextReviewAt !== 'string') {
+              v.nextReviewAt = v.judgedAt ? addDaysIso(v.judgedAt, DEFAULT_REVIEW_DAYS) : ''
+            }
+            if (typeof v.resolution !== 'string') v.resolution = ''
+            if (typeof v.reviewer !== 'string') v.reviewer = ''
+            if (typeof v.resolvedAt !== 'string') v.resolvedAt = ''
           })
       })
   }
@@ -353,6 +379,10 @@ function seedVetos(): RiskVeto[] {
       description: '营位北缘距常水位仅 8 米，暴雨后水位上涨会直接漫过沙地。',
       judge: '陈巡',
       judgedAt: '2024-04-11',
+      nextReviewAt: '2024-04-25',
+      resolution: '',
+      reviewer: '',
+      resolvedAt: '',
       createdAt: SEED_TS,
       updatedAt: SEED_TS
     },
@@ -363,6 +393,25 @@ function seedVetos(): RiskVeto[] {
       description: '台地中央有一株孤立高杉，雷雨时存在雷击与断枝风险。',
       judge: '李营',
       judgedAt: '2024-04-11',
+      nextReviewAt: '2024-04-30',
+      resolution: '',
+      reviewer: '',
+      resolvedAt: '',
+      createdAt: SEED_TS,
+      updatedAt: SEED_TS
+    },
+    {
+      id: 3,
+      siteId: 3,
+      type: '孤树下',
+      description: '坝顶西北侧一株孤树，初评时雷雨季节雷击距离偏大，先挂否决待复查。',
+      judge: '周勘',
+      judgedAt: '2024-03-20',
+      nextReviewAt: '2024-04-05',
+      resolution:
+        '现场用卷尺复测，孤树与营位边缘水平距离 31 米，超出树冠高度两倍；近一年无断枝痕迹，确认风险解除。',
+      reviewer: '陈巡',
+      resolvedAt: '2024-04-06',
       createdAt: SEED_TS,
       updatedAt: SEED_TS
     }

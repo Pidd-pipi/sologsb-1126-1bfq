@@ -13,8 +13,10 @@ const props = withDefaults(
     score?: number
     /** small 用于表格行内，large 用于详情页头部 */
     size?: 'small' | 'default' | 'large'
-    /** 命中否决项时追加「否决」标记 */
+    /** 命中未解除的否决项时追加「否决」标记 */
     vetoed?: boolean
+    /** 到了复查日期仍未解除时追加「待复查」标记（橙色警示，区别于一般否决红） */
+    pendingReview?: boolean
     /** 是否展示等级文案 */
     showLabel?: boolean
   }>(),
@@ -22,13 +24,19 @@ const props = withDefaults(
     score: undefined,
     size: 'default',
     vetoed: false,
+    pendingReview: false,
     showLabel: true
   }
 )
 
-const color = computed(() => (props.vetoed ? '#b91c1c' : GRADE_COLOR[props.grade]))
+const color = computed(() => {
+  if (props.pendingReview) return '#b45309'
+  if (props.vetoed) return '#b91c1c'
+  return GRADE_COLOR[props.grade]
+})
 
 const label = computed(() => {
+  if (props.pendingReview) return `${props.grade} 级 · 待复查`
   if (props.vetoed) return `${props.grade} 级 · 命中否决`
   return GRADE_LABEL[props.grade]
 })
