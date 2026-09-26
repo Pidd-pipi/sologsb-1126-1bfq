@@ -20,9 +20,9 @@ import type { AspectType, AccessMode, SurfaceType } from '@/types/campsite'
 import type { Grade } from '@/utils/score'
 import type { RockfallRisk, WindDir, WindForce } from '@/types/factor'
 import { ROCKFALL_RISKS, WIND_DIRS, WIND_FORCES } from '@/types/factor'
-import { VETO_TYPES, VETO_HINTS } from '@/types/veto'
-import type { VetoType } from '@/types/veto'
-import { formatDate, formatDateTime, todayIso } from '@/utils/format'
+import { VETO_TYPES, VETO_HINTS, isVetoDue } from '@/types/veto'
+import type { VetoType, RiskVeto } from '@/types/veto'
+import { formatDate, formatDateTime, todayIso, defaultReviewDate } from '@/utils/format'
 import { formatLat, formatLng } from '@/utils/geo'
 
 const route = useRoute()
@@ -40,7 +40,8 @@ const { scoreOf } = useRanking({
   weights: () => profileStore.activeWeights,
   normalize: () => profileStore.activeProfile?.normalize ?? 'minmax',
   thresholds: () => profileStore.activeProfile?.thresholds ?? { gradeA: 78, gradeB: 58 },
-  vetoedIds: () => uiStore.vetoedSiteIds
+  vetoedIds: () => uiStore.vetoedSiteIds,
+  reviewDueIds: () => uiStore.reviewDueSiteIds
 })
 
 const scoreRow = computed(() => scoreOf(siteId.value))
@@ -55,7 +56,16 @@ function openSite(id: number): void {
 }
 const grade = computed(() => scoreRow.value?.grade ?? 'C')
 const factorHistory = computed(() => siteStore.factorsOf(siteId.value))
+/** 台账：该营位全部否决记录（含已解除） */
 const vetoList = computed(() => uiStore.vetosOf(siteId.value))
+/** 仍在生效的否决（压 C 级） */
+const activeVetoList = computed(() => uiStore.activeVetosOf(siteId.value))
+/** 已复核解除的记录（留在台账回看） */
+const resolvedVetoList = computed(() =>
+  vetoList.value.filter((v) => v.status === 'resolved')
+)
+const dueVetoList = computed(() => activeVetoList.value.filter((v) => isVetoDue(v)))
+const siteVetoed = computed(() => activeVetoList.value.length > 0)
 
 /* --------------------------- 多轮因子复核录入 --------------------------- */
 const showFactorForm = ref(false)
@@ -134,7 +144,8 @@ const vetoForm = reactive({
   type: '山洪沟' as VetoType,
   description: '',
   judge: '',
-  judgedAt: todayIso()
+  judgedAt: todayIso(),
+  nextReviewAt: defaultReviewDate()
 })
 
 async function addVetoHere(): Promise<void> {
@@ -143,23 +154,63 @@ async function addVetoHere(): Promise<void> {
     ElMessage.warning('请填写否决说明')
     return
   }
+  if (!vetoForm.nextReviewAt) {
+    ElMessage.warning('请约定下次复查日期')
+    return
+  }
+  if (vetoForm.nextReviewAt < (vetoForm.judgedAt || todayIso())) {
+    ElMessage.warning('下次复查日期不能早于判定日期')
+    return
+  }
   await uiStore.addVeto({
     siteId: siteId.value,
     type: vetoForm.type,
     description: vetoForm.description.trim(),
     judge: vetoForm.judge.trim() || '未署名',
     judgedAt: vetoForm.judgedAt || todayIso(),
+    nextReviewAt: vetoForm.nextReviewAt,
+    status: 'active',
     createdAt: '',
     updatedAt: ''
   })
   vetoForm.description = ''
-  ElMessage.success('已登记否决项，该营位在名次表与地图上标红且禁止评 A')
+  ElMessage.success('已登记否决项，该营位在名次表与地图上标红并压到 C 级')
 }
 
-async function removeVeto(id: number | undefined): Promise<void> {
-  if (typeof id !== 'number') return
-  await uiStore.removeVeto(id)
-  ElMessage.success('已解除该否决项')
+/** 现场复核解除：复核人写结论与日期后，营位重新按当前权重参与评级 */
+const resolveDialogVisible = ref(false)
+const resolvingVeto = ref<RiskVeto | null>(null)
+const resolveForm = reactive({
+  resolvedBy: '',
+  resolvedAt: todayIso(),
+  resolution: ''
+})
+
+function openResolve(veto: RiskVeto): void {
+  resolvingVeto.value = veto
+  resolveForm.resolvedBy = veto.judge ?? ''
+  resolveForm.resolvedAt = todayIso()
+  resolveForm.resolution = ''
+  resolveDialogVisible.value = true
+}
+
+async function confirmResolve(): Promise<void> {
+  if (!resolvingVeto.value?.id) return
+  if (!resolveForm.resolution.trim()) {
+    ElMessage.warning('请填写现场复核结论')
+    return
+  }
+  try {
+    await uiStore.resolveVeto(resolvingVeto.value.id, {
+      resolvedBy: resolveForm.resolvedBy,
+      resolvedAt: resolveForm.resolvedAt || todayIso(),
+      resolution: resolveForm.resolution
+    })
+    resolveDialogVisible.value = false
+    ElMessage.success('已解除：该营位按当前权重重新参与评级')
+  } catch (err) {
+    ElMessage.error(`解除失败：${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
 /* ------------------------------ 基本信息编辑 ------------------------------ */
@@ -222,6 +273,12 @@ function metaOf(key: string) {
   return FACTOR_META.find((m) => m.key === key)
 }
 
+/** 否决台账行：待复查琥珀底，已解除弱化 */
+function vetoRowClass({ row }: { row: RiskVeto }): string {
+  if (row.status === 'resolved') return 'resolved-row'
+  return isVetoDue(row) ? 'review-row' : ''
+}
+
 watch(
   () => route.params.id,
   () => {
@@ -251,12 +308,24 @@ watch(
     </div>
 
     <el-alert
-      v-if="vetoList.length"
+      v-if="dueVetoList.length"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="该营位存在已到复查日期的风险否决项：等级仍保持 C 级，请尽快现场复核"
+      :description="
+        dueVetoList
+          .map((v) => `${v.type}（${formatDate(v.nextReviewAt)} 到期）：${v.description}`)
+          .join(' ｜ ')
+      "
+    />
+    <el-alert
+      v-else-if="activeVetoList.length"
       type="error"
       show-icon
       :closable="false"
-      title="该营位命中风险否决项，综合等级已被压到 C 级（禁止评 A）"
-      :description="vetoList.map((v) => `${v.type}：${v.description}`).join(' ｜ ')"
+      title="该营位命中风险否决项，综合等级被压到 C 级"
+      :description="activeVetoList.map((v) => `${v.type}：${v.description}`).join(' ｜ ')"
     />
 
     <MapPanel
@@ -277,7 +346,12 @@ watch(
       <div class="stat-card">
         <div class="stat-card__label">推荐等级</div>
         <div class="stat-card__value">
-          <GradeBadge :grade="grade" size="large" :vetoed="vetoList.length > 0" />
+          <GradeBadge
+            :grade="grade"
+            size="large"
+            :vetoed="siteVetoed"
+            :pending-review="scoreRow?.pendingReview ?? false"
+          />
         </div>
         <div class="stat-card__extra">名次第 {{ scoreRow?.rank ?? '—' }} 位</div>
       </div>
@@ -289,7 +363,9 @@ watch(
       <div class="stat-card">
         <div class="stat-card__label">评估轮次</div>
         <div class="stat-card__value">{{ factorHistory.length }}</div>
-        <div class="stat-card__extra">否决项 {{ vetoList.length }} 条</div>
+        <div class="stat-card__extra">
+          生效否决 {{ activeVetoList.length }} 条 · 已解除 {{ resolvedVetoList.length }} 条
+        </div>
       </div>
     </div>
 
@@ -559,23 +635,66 @@ watch(
     <section class="panel">
       <div class="panel__head">
         <h2>风险否决记录</h2>
-        <span class="weight-note">命中任一条即整行标红并禁止评 A</span>
+        <span class="weight-note">
+          生效中 {{ activeVetoList.length }} 条（待复查 {{ dueVetoList.length }}）· 已解除
+          {{ resolvedVetoList.length }} 条留档
+        </span>
       </div>
 
-      <el-table v-if="vetoList.length" :data="vetoList" size="small" border>
-        <el-table-column prop="type" label="否决类型" width="130">
+      <el-table
+        v-if="vetoList.length"
+        :data="vetoList"
+        size="small"
+        border
+        :row-class-name="vetoRowClass"
+      >
+        <el-table-column label="状态" width="92">
           <template #default="{ row }">
-            <el-tag type="danger" size="small">{{ row.type }}</el-tag>
+            <el-tag v-if="row.status === 'resolved'" type="success" size="small">已解除</el-tag>
+            <el-tag v-else-if="isVetoDue(row)" type="warning" size="small">待复查</el-tag>
+            <el-tag v-else type="danger" size="small">生效中</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="description" label="说明" min-width="260" />
-        <el-table-column prop="judge" label="判定人" width="110" />
-        <el-table-column label="判定日期" width="120">
-          <template #default="{ row }">{{ formatDate(row.judgedAt) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
+        <el-table-column prop="type" label="否决类型" width="120">
           <template #default="{ row }">
-            <el-button size="small" text type="danger" @click="removeVeto(row.id)">解除</el-button>
+            <el-tag :type="row.status === 'resolved' ? 'info' : 'danger'" size="small">
+              {{ row.type }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="description" label="判定说明" min-width="220" />
+        <el-table-column label="判定人 / 日期" width="126">
+          <template #default="{ row }">
+            <div>{{ row.judge }}</div>
+            <div class="cell-sub">{{ formatDate(row.judgedAt) }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="下次复查" width="112">
+          <template #default="{ row }">
+            <span :class="{ 'due-date': isVetoDue(row) }">{{ formatDate(row.nextReviewAt) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="复核结论" min-width="220">
+          <template #default="{ row }">
+            <template v-if="row.status === 'resolved'">
+              <div>{{ row.resolvedBy }} · {{ formatDate(row.resolvedAt) }}</div>
+              <div class="cell-sub">{{ row.resolution }}</div>
+            </template>
+            <span v-else class="muted">现场确认后写结论解除</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="104" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.status !== 'resolved'"
+              size="small"
+              text
+              :type="isVetoDue(row) ? 'warning' : 'danger'"
+              @click="openResolve(row)"
+            >
+              复核解除
+            </el-button>
+            <span v-else class="muted">—</span>
           </template>
         </el-table-column>
       </el-table>
@@ -599,6 +718,16 @@ watch(
               type="date"
               value-format="YYYY-MM-DD"
               style="width: 100%"
+              @change="() => (vetoForm.nextReviewAt = defaultReviewDate(vetoForm.judgedAt))"
+            />
+          </el-form-item>
+          <el-form-item label="下次复查">
+            <el-date-picker
+              id="veto-review-date"
+              v-model="vetoForm.nextReviewAt"
+              type="date"
+              value-format="YYYY-MM-DD"
+              style="width: 100%"
             />
           </el-form-item>
         </div>
@@ -613,9 +742,52 @@ watch(
         </el-form-item>
         <el-form-item>
           <el-button type="danger" plain @click="addVetoHere">登记否决项</el-button>
+          <span class="weight-note">到期未解除将在名次表标「待复查」，等级仍为 C；复核解除后恢复评级。</span>
         </el-form-item>
       </el-form>
     </section>
+
+    <el-dialog v-model="resolveDialogVisible" title="现场复核解除" width="520px">
+      <el-alert
+        v-if="resolvingVeto"
+        type="info"
+        :closable="false"
+        show-icon
+        :title="
+          `${resolvingVeto.type} · 判定于 ${formatDate(resolvingVeto.judgedAt)}` +
+          `（复查日 ${formatDate(resolvingVeto.nextReviewAt)}）`
+        "
+        :description="resolvingVeto.description"
+        style="margin-bottom: 14px"
+      />
+      <el-form label-width="92px" @submit.prevent>
+        <el-form-item label="复核人">
+          <el-input id="resolve-by" v-model="resolveForm.resolvedBy" placeholder="现场确认的复核人" />
+        </el-form-item>
+        <el-form-item label="复核日期">
+          <el-date-picker
+            id="resolve-date"
+            v-model="resolveForm.resolvedAt"
+            type="date"
+            value-format="YYYY-MM-DD"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item label="复核结论">
+          <el-input
+            id="resolve-note"
+            v-model="resolveForm.resolution"
+            type="textarea"
+            :rows="3"
+            placeholder="现场确认情况与解除依据；提交后该营位按当前权重重新参与评级"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="resolveDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmResolve">确认解除，恢复评级</el-button>
+      </template>
+    </el-dialog>
   </div>
 
   <div v-else class="page">
@@ -646,5 +818,9 @@ watch(
 }
 .review-form {
   margin-bottom: 12px;
+}
+.due-date {
+  color: #d97706;
+  font-weight: 600;
 }
 </style>

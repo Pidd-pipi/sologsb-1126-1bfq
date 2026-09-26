@@ -67,6 +67,21 @@ export function todayIso(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+/** 在某个 YYYY-MM-DD 日期上加减天数，仍返回 YYYY-MM-DD；入参非法时回退到今天。 */
+export function addDaysIso(dateIso: string, days: number): string {
+  const base = dateIso ? new Date(`${dateIso}T00:00:00`) : new Date()
+  if (Number.isNaN(base.getTime())) return todayIso()
+  base.setDate(base.getDate() + days)
+  return base.toISOString().slice(0, 10)
+}
+
+/** 登记否决时建议的下次复查日期：判定日后 30 天。 */
+export const VETO_REVIEW_PERIOD_DAYS = 30
+
+export function defaultReviewDate(judgedAt: string = todayIso()): string {
+  return addDaysIso(judgedAt || todayIso(), VETO_REVIEW_PERIOD_DAYS)
+}
+
 /** ISO / 日期文本转本地展示。 */
 export function formatDateTime(value: string): string {
   if (!value) return '—'

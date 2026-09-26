@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
  * `/` 营位名次表 —— 按综合得分从高到低排序，展示坡度、水源距离、信号与等级，
- * 可按营地 / 地表类型 / 进出方式筛选，命中否决项的营位整行标红。
+ * 可按营地 / 地表类型 / 进出方式筛选；命中生效否决项的营位整行标红并压到 C 级，
+ * 否决到期未解除的标琥珀色「待复查」；已解除的记录不再影响名次。
  * 消费 Campsite、FactorAssessment、RiskVeto；复用 <GradeBadge>、<EmptyState>。
  */
 import { computed } from 'vue'
@@ -14,7 +15,7 @@ import { FACTOR_META } from '@/types/score'
 import { SURFACE_TYPES, ACCESS_MODES } from '@/types/campsite'
 import GradeBadge from '@/components/common/GradeBadge.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
-import { formatScore } from '@/utils/format'
+import { formatScore, formatDate } from '@/utils/format'
 import { NORMALIZE_LABELS } from '@/types/score'
 
 const router = useRouter()
@@ -42,7 +43,8 @@ const { ranked } = useRanking({
   weights: () => profileStore.activeWeights,
   normalize: () => profileStore.activeProfile?.normalize ?? 'minmax',
   thresholds: () => profileStore.activeProfile?.thresholds ?? { gradeA: 78, gradeB: 58 },
-  vetoedIds: () => uiStore.vetoedSiteIds
+  vetoedIds: () => uiStore.vetoedSiteIds,
+  reviewDueIds: () => uiStore.reviewDueSiteIds
 })
 
 const factorMetaOf = (key: string) => FACTOR_META.find((m) => m.key === key)
@@ -55,9 +57,16 @@ function normalizedOf(
   return row.rows.find((r) => r.key === key)?.normalized ?? '—'
 }
 
-/** 命中否决项的营位整行标红 */
-function rowClass({ row }: { row: { vetoed: boolean } }): string {
+/** 命中生效否决的营位整行标红；否决到期待复核的整行标琥珀色 */
+function rowClass({ row }: { row: { vetoed: boolean; pendingReview: boolean } }): string {
+  if (row.pendingReview) return 'review-row'
   return row.vetoed ? 'veto-row' : ''
+}
+
+/** 该营位待复查记录中最早到期的复查日期，用于行内提示 */
+function earliestDueDate(siteId: number): string {
+  const dates = uiStore.dueVetosOf(siteId).map((v) => v.nextReviewAt).filter(Boolean).sort()
+  return dates[0] ?? ''
 }
 
 const stats = computed(() => {
@@ -66,6 +75,7 @@ const stats = computed(() => {
     total: rows.length,
     gradeA: rows.filter((r) => r.grade === 'A').length,
     vetoed: rows.filter((r) => r.vetoed).length,
+    pendingReview: rows.filter((r) => r.pendingReview).length,
     top: rows[0]?.total ?? 0,
     topName: rows[0] ? `${rows[0].site.code} ${rows[0].site.name}` : '—'
   }
@@ -89,7 +99,8 @@ function openDetail(siteId: number | undefined): void {
         <h1>营位名次表</h1>
         <p>
           按当前权重方案对全部候选营位加权求和后降序排列，实时给出 A/B/C 推荐等级；
-          命中风险否决项的营位整行标红并自动降为 C 级。
+          命中生效风险否决项的营位整行标红并压到 C 级，复查日期到期未解除的标「待复查」，
+          现场复核解除后立即按当前权重恢复评级。
         </p>
       </div>
       <div class="page-actions">
@@ -111,11 +122,13 @@ function openDetail(siteId: number | undefined): void {
         <div class="stat-card__extra">阈值来自当前方案</div>
       </div>
       <div class="stat-card">
-        <div class="stat-card__label">命中否决</div>
+        <div class="stat-card__label">生效否决</div>
         <div class="stat-card__value" :style="{ color: stats.vetoed ? '#b91c1c' : undefined }">
           {{ stats.vetoed }}
         </div>
-        <div class="stat-card__extra">否决后禁止评 A</div>
+        <div class="stat-card__extra">
+          其中待复查 {{ stats.pendingReview }} 个 · 解除后恢复评级
+        </div>
       </div>
       <div class="stat-card">
         <div class="stat-card__label">最高综合得分</div>
@@ -231,16 +244,38 @@ function openDetail(siteId: number | undefined): void {
             <strong class="total-score">{{ formatScore(row.total) }}</strong>
           </template>
         </el-table-column>
-        <el-table-column label="等级" width="210">
+        <el-table-column label="等级" width="220">
           <template #default="{ row }">
-            <GradeBadge :grade="row.grade" :score="row.total" :vetoed="row.vetoed" />
+            <GradeBadge
+              :grade="row.grade"
+              :score="row.total"
+              :vetoed="row.vetoed"
+              :pending-review="row.pendingReview"
+            />
           </template>
         </el-table-column>
-        <el-table-column label="否决项" min-width="180">
+        <el-table-column label="风险否决" min-width="210">
           <template #default="{ row }">
             <template v-if="row.vetoed">
-              <el-tag v-for="v in uiStore.vetosOf(row.siteId)" :key="v.id" type="danger" size="small" class="mr6">
-                {{ v.type }}
+              <div class="veto-cell">
+                <el-tag
+                  v-for="v in uiStore.activeVetosOf(row.siteId)"
+                  :key="v.id"
+                  type="danger"
+                  size="small"
+                  class="mr6"
+                >
+                  {{ v.type }}
+                </el-tag>
+              </div>
+              <el-tag
+                v-if="row.pendingReview"
+                type="warning"
+                size="small"
+                effect="plain"
+                class="review-tag"
+              >
+                待复查（{{ formatDate(earliestDueDate(row.siteId)) }} 到期）
               </el-tag>
             </template>
             <span v-else class="muted">无</span>
@@ -306,5 +341,13 @@ function openDetail(siteId: number | undefined): void {
 }
 .mr6 {
   margin-right: 6px;
+}
+.veto-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 0;
+}
+.review-tag {
+  margin-top: 4px;
 }
 </style>

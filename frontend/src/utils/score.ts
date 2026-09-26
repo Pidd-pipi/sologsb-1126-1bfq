@@ -157,7 +157,7 @@ export function weightedTotal(normalized: Record<FactorKey, number>, weights: Fa
   return round1(sum / weightSum)
 }
 
-/** 等级阈值判定；命中否决项时最高只能评 B，短路为 C。 */
+/** 等级阈值判定；命中生效否决项时短路为 C，直到复核解除后才按得分判定。 */
 export function gradeOf(total: number, thresholds: GradeThresholds, vetoed: boolean): Grade {
   const a = Number(thresholds.gradeA) || 80
   const b = Number(thresholds.gradeB) || 60

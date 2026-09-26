@@ -40,7 +40,14 @@ docker compose down
 | Campsite 营位 | `frontend/src/types/campsite.ts` | 营位编号、名称、所属营地、经纬度、海拔、坡度、坡向、地表类型、可容帐篷数、平整度评分、进出方式、默认方案 |
 | FactorAssessment 因子评估 | `frontend/src/types/factor.ts` | 所属营位、水源距离、风向与风力等级、信号强度、日照时长、落石落枝风险、植被遮蔽度、离车距离、离步道距离、评估人、评估日期 |
 | ScoreProfile 权重方案 | `frontend/src/types/score.ts` | 方案名、各因子权重（0-100）、归一化方式（极差归一 / 阈值分段）、A/B/C 等级阈值、适用季节、是否启用 |
-| RiskVeto 风险否决项 | `frontend/src/types/veto.ts` | 营位 id、否决类型（河道内 / 山洪沟 / 孤树下 / 崖底落石区 / 陡坡）、说明、判定人、判定日期 |
+| RiskVeto 风险否决项 | `frontend/src/types/veto.ts` | 营位 id、否决类型（河道内 / 山洪沟 / 孤树下 / 崖底落石区 / 陡坡）、说明、判定人、判定日期、下次复查日期、状态（生效中 / 已解除）、复核人 / 复核日期 / 复核结论 |
+
+### 风险否决的复查与解除流程
+
+1. **登记**：录入否决项时约定「下次复查日期」，记录生效（`status=active`），该营位等级立即短路为 C，名次表整行标红、地图标记按 C 级着色。
+2. **到期待复查**：复查日期已到且仍未解除，等级**继续保持 C**，名次表整行改标琥珀色「待复查」并提示到期日，旧判断不会因为时间过去而自动失效。
+3. **现场复核解除**：复核人在营位详情或否决台账中填写**复核结论、复核日期与复核人**后解除（`status=resolved`），该营位立即按当前权重重新参与评级；没有到期 / 已解除记录的营位照旧正常评级。
+4. **记录留档**：解除不删除记录，台账保留全部历史（含复核结论），可随时回看。
 
 ### IndexedDB 版本与升级迁移
 
@@ -49,17 +56,18 @@ docker compose down
 - **v1**：建立 `sites`（营位）与 `factors`（因子评估）两张表。
 - **v2**：新增 `profiles`（权重方案）表，并为 `factors` 补 `siteId` 索引，让「按营位取因子」走索引；同时为存量因子补齐 `shade`、`distanceToCar`、`distanceToTrail` 缺省值。
 - **v3**：新增 `vetos`（风险否决）表，并为存量营位回填 `defaultProfileId`（取当前启用方案的 id）与新增字段缺省值。
+- **v4**：为 `vetos` 补 `nextReviewAt`、`status` 索引与复核解除字段（`resolvedAt` / `resolvedBy` / `resolution`）；存量记录视为生效中，复查日期回填为判定日后 30 天。
 
 ## 四、页面与路由
 
 | 路由 | 页面 | 消费模型 |
 | --- | --- | --- |
-| `/` | 营位名次表（按综合得分降序，展示坡度、水源距离、信号与等级，可按营地/地表/进出方式筛选，命中否决项整行标红） | Campsite、FactorAssessment、RiskVeto |
+| `/` | 营位名次表（按综合得分降序，展示坡度、水源距离、信号与等级，可按营地/地表/进出方式筛选，命中生效否决整行标红，到期未解除标琥珀色「待复查」） | Campsite、FactorAssessment、RiskVeto |
 | `/sites/new` | 新增营位（地图点选或手填经纬度，录入海拔、坡度、坡向与容量，支持草稿保存） | Campsite、FactorAssessment |
-| `/sites/:id` | 营位详情（上部地图定位与基本信息，中部因子打分表，下部否决记录与多轮复核） | 四个模型 |
+| `/sites/:id` | 营位详情（上部地图定位与基本信息，中部因子打分表，下部否决记录、复查解除与多轮复核） | 四个模型 |
 | `/scoring` | 权重与评分（拖动各因子权重条，名次实时刷新，可另存为季节方案） | ScoreProfile、Campsite |
 | `/map` | 营位地图（高德 JS API 标记按等级着色，未配置 `VITE_AMAP_KEY` 时退化为本地 SVG 网格视图） | Campsite、RiskVeto |
-| `/veto` | 风险否决登记（选营位与否决类型、填说明，提交后名次表与地图同步更新） | RiskVeto、Campsite |
+| `/veto` | 风险否决登记（选营位与否决类型、填说明与下次复查日期，提交后名次表与地图同步更新；到期标「待复查」，复核人写结论解除，全部记录留在台账） | RiskVeto、Campsite |
 
 ## 五、共享组件与 hooks / utils
 

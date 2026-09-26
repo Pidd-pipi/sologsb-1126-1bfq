@@ -13,8 +13,10 @@ const props = withDefaults(
     score?: number
     /** small 用于表格行内，large 用于详情页头部 */
     size?: 'small' | 'default' | 'large'
-    /** 命中否决项时追加「否决」标记 */
+    /** 命中生效否决项时追加「否决」标记 */
     vetoed?: boolean
+    /** 否决已到复查日期、等待现场复核：等级仍为 C，标记「待复查」 */
+    pendingReview?: boolean
     /** 是否展示等级文案 */
     showLabel?: boolean
   }>(),
@@ -22,13 +24,19 @@ const props = withDefaults(
     score: undefined,
     size: 'default',
     vetoed: false,
+    pendingReview: false,
     showLabel: true
   }
 )
 
-const color = computed(() => (props.vetoed ? '#b91c1c' : GRADE_COLOR[props.grade]))
+const color = computed(() => {
+  if (props.pendingReview) return '#d97706'
+  if (props.vetoed) return '#b91c1c'
+  return GRADE_COLOR[props.grade]
+})
 
 const label = computed(() => {
+  if (props.pendingReview) return `${props.grade} 级 · 待复查`
   if (props.vetoed) return `${props.grade} 级 · 命中否决`
   return GRADE_LABEL[props.grade]
 })
@@ -39,7 +47,13 @@ const scoreText = computed(() =>
 </script>
 
 <template>
-  <span class="grade-badge" :class="[`grade-badge--${size}`, { 'is-vetoed': vetoed }]">
+  <span
+    class="grade-badge"
+    :class="[
+      `grade-badge--${size}`,
+      { 'is-vetoed': vetoed && !pendingReview, 'is-review': pendingReview }
+    ]"
+  >
     <span class="grade-badge__chip" :style="{ background: color }">{{ grade }}</span>
     <span v-if="typeof score === 'number'" class="grade-badge__score">{{ scoreText }}</span>
     <span v-if="showLabel" class="grade-badge__label">{{ label }}</span>
@@ -99,5 +113,8 @@ const scoreText = computed(() =>
 }
 .grade-badge.is-vetoed .grade-badge__score {
   color: #b91c1c;
+}
+.grade-badge.is-review .grade-badge__score {
+  color: #d97706;
 }
 </style>

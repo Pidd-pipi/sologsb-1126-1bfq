@@ -156,6 +156,24 @@ h4 {
   background: #ffeceb !important;
 }
 
+/* 到期待复查：仍为 C 级，但用琥珀色与新否决的红色区分 */
+.review-row {
+  background: #fff8eb !important;
+}
+
+.el-table .review-row:hover > td {
+  background: #fdf1d9 !important;
+}
+
+/* 台账中已解除的记录弱化展示，仅保留回看价值 */
+.el-table .resolved-row {
+  color: var(--gb-muted);
+}
+
+.el-table .resolved-row:hover > td {
+  background: #fafafa !important;
+}
+
 .weight-note {
   font-size: 12px;
   color: var(--gb-muted);

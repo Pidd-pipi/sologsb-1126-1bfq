@@ -5,6 +5,7 @@
  *   v1 建 sites / factors 两张表
  *   v2 新增 profiles 表，并为 factors 补 siteId 索引
  *   v3 新增 vetos 表，并为存量营位回填默认权重方案
+ *   v4 vetos 增加复查与解除字段（nextReviewAt / status / resolvedAt 等）
  */
 import Dexie, { type Table } from 'dexie'
 import type { Campsite } from '@/types/campsite'
@@ -12,10 +13,11 @@ import type { FactorAssessment } from '@/types/factor'
 import type { ScoreProfile } from '@/types/score'
 import { DEFAULT_WEIGHTS } from '@/types/score'
 import type { RiskVeto } from '@/types/veto'
+import { addDaysIso, VETO_REVIEW_PERIOD_DAYS } from '@/utils/format'
 
 export const DB_NAME = 'gbcampsite-db'
 /** 当前数据结构版本号 */
-export const DB_VERSION = 3
+export const DB_VERSION = 4
 
 export class GbCampsiteDatabase extends Dexie {
   sites!: Table<Campsite, number>
@@ -72,6 +74,31 @@ export class GbCampsiteDatabase extends Dexie {
             if (typeof s.note !== 'string') s.note = ''
             if (typeof s.flatness !== 'number') s.flatness = 70
             if (typeof s.tentCapacity !== 'number') s.tentCapacity = 1
+          })
+      })
+
+    // v4：风险否决增加复查与解除流程。
+    // vetos 补 nextReviewAt 索引（到期的记录用于「待复查」标记）；
+    // 存量记录视为生效中，复查日期回填为判定日后 30 天。
+    this.version(DB_VERSION)
+      .stores({
+        sites: '++id, code, name, campName, surface, access, defaultProfileId, updatedAt',
+        factors: '++id, siteId, assessedAt, assessor',
+        profiles: '++id, name, season, active, updatedAt',
+        vetos: '++id, siteId, type, judgedAt, nextReviewAt, status'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('vetos')
+          .toCollection()
+          .modify((v: Partial<RiskVeto>) => {
+            if (v.status !== 'resolved') v.status = 'active'
+            if (typeof v.nextReviewAt !== 'string' || !v.nextReviewAt) {
+              v.nextReviewAt = addDaysIso(
+                typeof v.judgedAt === 'string' && v.judgedAt ? v.judgedAt : '',
+                VETO_REVIEW_PERIOD_DAYS
+              )
+            }
           })
       })
   }
@@ -353,6 +380,8 @@ function seedVetos(): RiskVeto[] {
       description: '营位北缘距常水位仅 8 米，暴雨后水位上涨会直接漫过沙地。',
       judge: '陈巡',
       judgedAt: '2024-04-11',
+      nextReviewAt: '2024-04-26',
+      status: 'active',
       createdAt: SEED_TS,
       updatedAt: SEED_TS
     },
@@ -363,6 +392,24 @@ function seedVetos(): RiskVeto[] {
       description: '台地中央有一株孤立高杉，雷雨时存在雷击与断枝风险。',
       judge: '李营',
       judgedAt: '2024-04-11',
+      nextReviewAt: '2024-04-26',
+      status: 'active',
+      createdAt: SEED_TS,
+      updatedAt: SEED_TS
+    },
+    {
+      id: 3,
+      siteId: 4,
+      type: '崖底落石区',
+      description: '崖壁西侧凹槽背风，但上方有新鲜落石碎屑，初判时否决。',
+      judge: '周勘',
+      judgedAt: '2024-04-09',
+      nextReviewAt: '2024-04-20',
+      status: 'resolved',
+      resolvedAt: '2024-04-21',
+      resolvedBy: '周勘',
+      resolution:
+        '现场复查：崖壁已挂防护网，近期清理后沟底无新鲜碎屑，营位上方设警戒区，确认可以恢复评级。',
       createdAt: SEED_TS,
       updatedAt: SEED_TS
     }
